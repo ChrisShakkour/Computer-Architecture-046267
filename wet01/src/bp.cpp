@@ -6,14 +6,13 @@
 #include <cstdint>
 #include <iostream>
 #include <vector>
-#include <map>
 #include <math.h>
-#include <assert.h>
+#include <bitset>
 
 
 /* uncomment to see
  *  debug messeges*/
-//#define DEBUG_CODE_ON
+#define DEBUG_CODE_ON
 
 #define MAX_HISTORY_BITS 	8
 #define MAX_TABLE_ENTRIES 	32
@@ -145,6 +144,10 @@ class BranchPredictor {
 		/* addr masks */
 		uint32_t btbEntryAddrMask;
 		uint32_t tagMask;
+		uint8_t  historyMask;
+		
+		/* branch predictor stats */
+		SIM_stats perfStats;
 		
 	// ####################################
 	// ### class functions
@@ -154,10 +157,18 @@ class BranchPredictor {
 		BranchPredictor(t_btbIdentity id_){ id = id_; };
 	
 		
+		/* creats a history mask to mach history size */
+		void construct_history_mask(void){
+			historyMask = 0x0;
+			for(int i=0; i<id.historySize; i++)
+				historyMask = (historyMask << 1) +1;
+		}
+		
+		
 		/* creates a mask that looks like this 0b00001100 for entry size of 4 */
 		void construct_entry_addr_mask(void){
 			btbEntryAddrMask = 0x0;
-			for(int i=0; i<log2(id.numOfEntries); i++)
+			for(int i=0; i<int(log2(id.numOfEntries)); i++)
 				btbEntryAddrMask = (btbEntryAddrMask << 1) +1; 
 			btbEntryAddrMask = btbEntryAddrMask << 2; // two lower bits are always 0;
 		};
@@ -166,10 +177,10 @@ class BranchPredictor {
 		
 		/* creates a mask for tag extraction */
 		void construct_tag_mask(void){
-			tagMask = 0x3;
-			for(int i=0; i<log2(id.numOfEntries); i++)
-				tagMask = (tagMask << 1) +1; 
-			tagMask = ~tagMask;
+			tagMask = 0x0;
+			for(uint8_t i=0; i<id.tagSize; i++)
+				tagMask = (tagMask << 1) +1;
+			tagMask = tagMask << (int(log2(id.numOfEntries)) + 2);
 		};
 		
 		
@@ -211,9 +222,39 @@ class BranchPredictor {
 		};
 			
 		
-		/*  */
-		t_branchJump get_branch_resolution(uint8_t btbEntryAddr){
-			return NOT_TAKEN;
+		/* according to the btb entry deep 
+		 * dive into the BP topology to get the 
+		 * branch prediction TAKE/NOT_TAKEN result */
+		t_branchJump get_branch_resolution(uint8_t btbEntryAddr, uint32_t pc){
+			
+			t_history history;
+			uint8_t fsmTableAddr;
+			t_fsmVector fsmTable;
+			t_branchJump branchRes;
+			
+			// get history.
+			if(id.histType == LOCAL_HIST)
+				history = historyVector[btbEntryAddr];
+			else history = historyVector[0];
+			history = history & historyMask;
+			
+			// get fsm Table
+			if(id.tableType == LOCAL_TABLE)
+				fsmTable = histTableVectors[btbEntryAddr];
+			else fsmTable = histTableVectors[0];
+			
+			// calculate fsm entry addr
+			if((id.tableType == GLOBAL_TABLE) && (id.tableShare == GSHARE)){
+				if(id.sharePolicy == LSB_SHARE)
+					fsmTableAddr = uint8_t((pc >> 2) & historyMask) ^ uint8_t(history);
+				else
+					fsmTableAddr = uint8_t((pc >> 16) & historyMask) ^ uint8_t(history);
+			}
+			else fsmTableAddr = uint8_t(history);
+							 
+			// get branch resolution
+			branchRes = t_branchJump(int(fsmTable[fsmTableAddr])>>1);
+			return branchRes;
 		};
 		
 		
@@ -235,7 +276,7 @@ class BranchPredictor {
 			
 			// btb table calculation
 			numOfEntries = id.numOfEntries;
-			tagSize = (ADDR_WIDTH - 2) - log2(numOfEntries); 
+			tagSize = id.tagSize;
 			btbBitSize = numOfEntries * (ADDR_WIDTH + tagSize);
 			
 			// history calculation
@@ -247,9 +288,9 @@ class BranchPredictor {
 			
 			// fsm tables calculation
 			if(id.tableType == LOCAL_TABLE)
-				fsmTablesBitsize = numOfEntries * 2 * pow(2, histSize);
+				fsmTablesBitsize = numOfEntries * 2 * (pow(2, histSize)-1);
 			else
-				fsmTablesBitsize = 2 * pow(2, histSize);
+				fsmTablesBitsize = 2 * (pow(2, histSize)-1);
 				
 			totalBitSize = btbBitSize + historyBitSize + fsmTablesBitsize;
 			return totalBitSize; // return size in bits
@@ -272,6 +313,7 @@ class BranchPredictor {
 BranchPredictor BP({0});
 
 
+/*  */
 int BP_init(unsigned btbSize, unsigned historySize, unsigned tagSize, unsigned fsmState,
 			bool isGlobalHist, bool isGlobalTable, int Shared){
 	
@@ -295,6 +337,13 @@ int BP_init(unsigned btbSize, unsigned historySize, unsigned tagSize, unsigned f
 	/* address masks construction */
 	BP.construct_entry_addr_mask();
 	BP.construct_tag_mask();
+	BP.construct_history_mask();
+
+	/* perfstats init */
+	BP.perfStats.flush_num = 0;
+	BP.perfStats.br_num    = 0;
+	BP.perfStats.size 	   = BP.get_branch_predictor_size();
+
 	
 	/* debug code */
 	#ifdef DEBUG_CODE_ON 
@@ -312,13 +361,20 @@ int BP_init(unsigned btbSize, unsigned historySize, unsigned tagSize, unsigned f
 		std::cout << "btb vector size: " 	   << BP.btbVector.size() << std::endl;
 		std::cout << "history vector size: "   << BP.historyVector.size() << std::endl;
 		std::cout << "fsm Table vector size: " << BP.histTableVectors.size() << std::endl;
+		std::cout << "fsm Table size: "        << BP.histTableVectors[0].size() << std::endl;
 		// mask values
-		std::cout << "entry address mask: " << BP.btbEntryAddrMask << std::endl;
-		std::cout << "tag address mask: " << BP.tagMask << std::endl;
+		std::bitset<32> y1(BP.btbEntryAddrMask);
+		std::bitset<32> y2(BP.tagMask);
+		std::bitset<8>  y3(BP.historyMask); 
+		std::cout << "entry address mask: " << y1 << std::endl;
+		std::cout << "tag address mask:   " << y2 << std::endl;
+		std::cout << "history mask:       " << y3 << std::endl;
 	#endif	  
 	return 0;
 }
 
+
+/*  */
 bool BP_predict(uint32_t pc, uint32_t *dst){
 	
 	uint8_t 	 btbEntryAddr; // [31:0]
@@ -343,7 +399,7 @@ bool BP_predict(uint32_t pc, uint32_t *dst){
 	
 	// if branch command hit
 	if(pcTag == entryTag){
-		branchJump = BP.get_branch_resolution(btbEntryAddr);
+		branchJump = BP.get_branch_resolution(btbEntryAddr, pc);
 		if(branchJump == TAKEN){
 			(*dst) = BP.btbVector[btbEntryAddr].target;
 			return TAKEN;
@@ -366,7 +422,11 @@ bool BP_predict(uint32_t pc, uint32_t *dst){
 }
 
 
+/*  */
 void BP_update(uint32_t pc, uint32_t targetPc, bool taken, uint32_t pred_dst){
+	
+	// update branch count
+	BP.perfStats.br_num++;
 	
 	t_btbEntry btbEntry;
 	uint8_t 	 btbEntryAddr; // [31:0]
@@ -399,10 +459,9 @@ void BP_update(uint32_t pc, uint32_t targetPc, bool taken, uint32_t pred_dst){
 
 void BP_GetStats(SIM_stats *curStats){
 	
-	
-	curStats->flush_num = 5;
-	curStats->br_num = 2;
-	curStats->size = BP.get_branch_predictor_size();
+	curStats->flush_num = BP.perfStats.flush_num;
+	curStats->br_num    = BP.perfStats.br_num;
+	curStats->size      = BP.get_branch_predictor_size();
 	
 	return;
 }
