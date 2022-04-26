@@ -12,7 +12,7 @@
 
 /* uncomment to see
  *  debug messeges*/
-#define DEBUG_CODE_ON
+//#define DEBUG_CODE_ON
 
 #define MAX_HISTORY_BITS 	8
 #define MAX_TABLE_ENTRIES 	32
@@ -146,6 +146,9 @@ class BranchPredictor {
 		uint32_t tagMask;
 		uint8_t  historyMask;
 		
+		/* last prediction */
+		t_branchJump lastJump; // TAKEN/NOT TAKEN;		
+		
 		/* branch predictor stats */
 		SIM_stats perfStats;
 		
@@ -259,9 +262,80 @@ class BranchPredictor {
 		
 		
 		/*  */
-		void set_branch_resolution(uint8_t btbEntryAddr, t_branchJump branchJump){
+		void update_history_vector(uint32_t pc, bool taken){
+
+			t_history history;
+			uint32_t 	 pcTag;
+			uint32_t 	 entryTag;
+			uint8_t btbEntryAddr;
 			
+			btbEntryAddr = (pc & btbEntryAddrMask) >> 2;
+			
+			// get history.
+			if(id.histType == LOCAL_HIST) {
+				history = historyVector[btbEntryAddr];
+				// flush history ?
+				// calculate pc tag
+				pcTag = pc & tagMask;			
+				// get entry tag
+				entryTag = btbVector[btbEntryAddr].tag;
+				if(entryTag != pcTag) // flush history
+					history = 0x0;
+			}
+			else history = historyVector[0];
+			
+			history = history & historyMask;			
+			history = (history << 1) + uint8_t(taken);
+			if(id.histType == LOCAL_HIST) {
+				historyVector[btbEntryAddr] = history;
+			}
+			else historyVector[0] = history;
+			return;
 		}
+		
+		
+		/*  */
+		void set_branch_resolution(uint32_t pc, bool taken){
+			
+			t_history history;
+			uint8_t fsmTableAddr;
+			t_fsmVector fsmTable;
+			int status;			
+			uint8_t btbEntryAddr;
+			
+			btbEntryAddr = (pc & btbEntryAddrMask) >> 2;
+
+			// get history.
+			if(id.histType == LOCAL_HIST)
+				history = historyVector[btbEntryAddr];
+			else history = historyVector[0];
+			history = history & historyMask;
+				
+			// get fsm Table
+			if(id.tableType == LOCAL_TABLE)
+				fsmTable = histTableVectors[btbEntryAddr];
+			else fsmTable = histTableVectors[0];
+			
+			// calculate fsm entry addr
+			if((id.tableType == GLOBAL_TABLE) && (id.tableShare == GSHARE)){
+				if(id.sharePolicy == LSB_SHARE)
+					fsmTableAddr = uint8_t((pc >> 2) & historyMask) ^ uint8_t(history);
+				else
+					fsmTableAddr = uint8_t((pc >> 16) & historyMask) ^ uint8_t(history);
+			}
+			else fsmTableAddr = uint8_t(history);
+			
+			// get branch resolution
+			status = int(fsmTable[fsmTableAddr]);
+			if(taken) status += (status < 3);
+			else status -= (status > 0);
+
+			// update bimodal fsm value
+			if(id.tableType == LOCAL_TABLE)	
+				histTableVectors[btbEntryAddr][fsmTableAddr] =  t_bimodalFSM(status);
+			else histTableVectors[0][fsmTableAddr] =  t_bimodalFSM(status);
+			return;
+		};
 		
 		
 		/* calculates the size in bits of this predictor */
@@ -339,11 +413,15 @@ int BP_init(unsigned btbSize, unsigned historySize, unsigned tagSize, unsigned f
 	BP.construct_tag_mask();
 	BP.construct_history_mask();
 
+	/* last jump result */
+	BP.lastJump = NOT_TAKEN;
+	
 	/* perfstats init */
 	BP.perfStats.flush_num = 0;
 	BP.perfStats.br_num    = 0;
 	BP.perfStats.size 	   = BP.get_branch_predictor_size();
 
+	
 	
 	/* debug code */
 	#ifdef DEBUG_CODE_ON 
@@ -382,12 +460,25 @@ bool BP_predict(uint32_t pc, uint32_t *dst){
 	uint32_t 	 entryTag;
 	t_branchJump branchJump;
 	
+	/* debug code */
+	#ifdef DEBUG_CODE_ON
+		std::cout << std::endl;
+		std::cout << "IF: ";
+		std::cout << "pc: 0x" << std::hex << pc << " ";		
+	#endif	  
+		
 	// calc entry address	
 	btbEntryAddr = (pc & BP.btbEntryAddrMask) >> 2;
 	
 	// entry unvalid no branch command
 	if(!BP.btbVector[btbEntryAddr].valid){
 		(*dst) = pc + 4;
+		BP.lastJump = NOT_TAKEN;
+		/* debug code */
+		#ifdef DEBUG_CODE_ON
+			std::cout << "target: 0x" << std::hex << (*dst) << " ";
+			std::cout << "result: N" << std::endl;
+		#endif
 		return NOT_TAKEN;
 	}
 
@@ -402,22 +493,27 @@ bool BP_predict(uint32_t pc, uint32_t *dst){
 		branchJump = BP.get_branch_resolution(btbEntryAddr, pc);
 		if(branchJump == TAKEN){
 			(*dst) = BP.btbVector[btbEntryAddr].target;
+			BP.lastJump = TAKEN;
+			/* debug code */
+			#ifdef DEBUG_CODE_ON
+				std::cout << "target: 0x" << std::hex << (*dst) << " ";
+				std::cout << "result: T" << std::endl;
+			#endif			
 			return TAKEN;
 		}
 		else{
 			(*dst) = pc + 4;
+			BP.lastJump = NOT_TAKEN;
+			/* debug code */
+			#ifdef DEBUG_CODE_ON
+				std::cout << "target: 0x" << std::hex << (*dst) << " ";
+				std::cout << "result: N" << std::endl;
+			#endif	  			
 			return NOT_TAKEN;
 		}
 	}
-	
-	/* debug code */
-	#ifdef DEBUG_CODE_ON
-		std::cout << std::endl;
-		std::cout << "entry addr: " << std::hex << int(btbEntryAddr) << std::endl;
-		std::cout << "IF: ";
-		std::cout << "pc: 0x" << std::hex << pc <<std::endl;
-	#endif	  
-	
+		
+	BP.lastJump = NOT_TAKEN;
 	return false;
 }
 
@@ -425,32 +521,38 @@ bool BP_predict(uint32_t pc, uint32_t *dst){
 /*  */
 void BP_update(uint32_t pc, uint32_t targetPc, bool taken, uint32_t pred_dst){
 	
-	// update branch count
-	BP.perfStats.br_num++;
-	
 	t_btbEntry btbEntry;
 	uint8_t 	 btbEntryAddr; // [31:0]
 
+	// update branch stats
+	BP.perfStats.br_num++;
+	if((targetPc != pred_dst) || (taken != bool(BP.lastJump)))
+		BP.perfStats.flush_num++;
+		
+	
 	// calc entry address	
 	btbEntryAddr = (pc & BP.btbEntryAddrMask) >> 2;
+	
+	// update history
+	BP.update_history_vector(pc, taken);
 		
-	// calculate pc tag
+	// update branch resolution for new history
+	BP.set_branch_resolution(pc, taken);
+	
+	// update history vector
 	btbEntry.tag    = pc & BP.tagMask;
 	btbEntry.target = targetPc;
 	btbEntry.valid  = true;
-	
-	// update entry table
 	BP.btbVector[btbEntryAddr] = btbEntry;
-	
-	// update history vector
-	// update branch resolution
-	// flush if needed
 	
 	/* debug code */
 	#ifdef DEBUG_CODE_ON 
 		//std::cout << std::endl;
-		std::cout << "EXE: ";
-		std::cout << "pc: 0x" << std::hex << pc <<std::endl;
+		std::cout << "EXE: "; //<< std::endl;
+		std::cout << "pc: 0x" << std::hex << pc << " ";//std::endl;
+		std::cout << "target: 0x" << std::hex << targetPc << " ";//std::endl;
+		std::cout << "branch: " << ((taken) ? "T" : "N") << " ";//std::endl;
+		std::cout << "predicted: 0x" << std::hex << pred_dst << " ";//std::endl;
 		std::cout << std::endl;
 	#endif	 
 		
