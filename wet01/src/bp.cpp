@@ -97,20 +97,10 @@ typedef std::vector<t_bimodalFSM> t_fsmVector;
 typedef uint8_t t_history;
 
 
-/* branch prediction struct,
- * holds speculative jump 
- * result and jump target
- * pointer to a history vector*/
-typedef struct {
-	t_branchJump result; // TAKEN/NOT TAKEN;
-	uint32_t 	 target; // 32 bit Address;
-} t_prediction;
-
-
 /* btb entry holds 
  * Tag feild
  * jump target feild
- * and address of history table */
+ * and valid bit */
 typedef struct {
 	uint32_t tag;
 	uint32_t target;
@@ -265,7 +255,7 @@ class BranchPredictor {
 		};
 		
 		
-		/*  */
+		/* updates history vector for local and global */
 		void update_history_vector(uint32_t pc, bool taken){
 
 			t_history history;
@@ -309,7 +299,7 @@ class BranchPredictor {
 		}
 		
 		
-		/*  */
+		/* updates the bimodal fsm given pc and resut */
 		void set_branch_resolution(uint32_t pc, bool taken){
 			
 			t_history history;
