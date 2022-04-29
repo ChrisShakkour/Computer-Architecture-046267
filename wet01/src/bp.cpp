@@ -257,6 +257,10 @@ class BranchPredictor {
 							 
 			// get branch resolution
 			branchRes = t_branchJump(int(fsmTable[fsmTableAddr])>>1);
+			/* debug code */
+			#ifdef DEBUG_CODE_ON
+				std::cout << "fsm stat: " << int(fsmTable[fsmTableAddr]) << std::endl;
+			#endif	  						
 			return branchRes;
 		};
 		
@@ -274,15 +278,26 @@ class BranchPredictor {
 			// get history.
 			if(id.histType == LOCAL_HIST) {
 				history = historyVector[btbEntryAddr];
-				// flush history ?
-				// calculate pc tag
 				pcTag = pc & tagMask;			
-				// get entry tag
 				entryTag = btbVector[btbEntryAddr].tag;
-				if(entryTag != pcTag) // flush history
+				if(entryTag != pcTag){ // flush history
+					/* debug code */
+					#ifdef DEBUG_CODE_ON
+						std::cout << "history Flush occured" << std::endl;
+					#endif	  						
 					history = 0x0;
+					if(id.tableType == LOCAL_TABLE)
+						std::fill(histTableVectors[btbEntryAddr].begin(),
+								  histTableVectors[btbEntryAddr].end(), id.initialState);
+				}
 			}
 			else history = historyVector[0];
+
+			/* debug code */
+			#ifdef DEBUG_CODE_ON
+				std::bitset<MAX_HISTORY_BITS> y(history);
+				std::cout << "history: " << y << std::endl;
+			#endif	  						
 			
 			history = history & historyMask;			
 			history = (history << 1) + uint8_t(taken);
@@ -327,13 +342,25 @@ class BranchPredictor {
 			
 			// get branch resolution
 			status = int(fsmTable[fsmTableAddr]);
+			
+			/* debug code */
+			#ifdef DEBUG_CODE_ON
+				std::cout << "fsm old stat: " << status << " ";
+			#endif	  						
+			
 			if(taken) status += (status < 3);
 			else status -= (status > 0);
 
+			/* debug code */
+			#ifdef DEBUG_CODE_ON
+				std::cout << "fsm new stat: " << status << std::endl;
+			#endif	  						
+			
 			// update bimodal fsm value
 			if(id.tableType == LOCAL_TABLE)	
 				histTableVectors[btbEntryAddr][fsmTableAddr] =  t_bimodalFSM(status);
 			else histTableVectors[0][fsmTableAddr] =  t_bimodalFSM(status);
+			
 			return;
 		};
 		
@@ -351,7 +378,7 @@ class BranchPredictor {
 			// btb table calculation
 			numOfEntries = id.numOfEntries;
 			tagSize = id.tagSize;
-			btbBitSize = numOfEntries * (ADDR_WIDTH + tagSize);
+			btbBitSize = numOfEntries * (ADDR_WIDTH + tagSize + 1); // target, tag, valid bit
 			
 			// history calculation
 			histSize = id.historySize;
@@ -362,9 +389,9 @@ class BranchPredictor {
 			
 			// fsm tables calculation
 			if(id.tableType == LOCAL_TABLE)
-				fsmTablesBitsize = numOfEntries * 2 * (pow(2, histSize)-1);
+				fsmTablesBitsize = numOfEntries * 2 * pow(2, histSize);
 			else
-				fsmTablesBitsize = 2 * (pow(2, histSize)-1);
+				fsmTablesBitsize = 2 * pow(2, histSize);
 				
 			totalBitSize = btbBitSize + historyBitSize + fsmTablesBitsize;
 			return totalBitSize; // return size in bits
@@ -526,18 +553,18 @@ void BP_update(uint32_t pc, uint32_t targetPc, bool taken, uint32_t pred_dst){
 
 	// update branch stats
 	BP.perfStats.br_num++;
-	if((targetPc != pred_dst) || (taken != bool(BP.lastJump)))
+	if((taken && (targetPc != pred_dst)) || 
+	   (!taken &&  (pred_dst != pc+4)))
 		BP.perfStats.flush_num++;
 		
-	
 	// calc entry address	
 	btbEntryAddr = (pc & BP.btbEntryAddrMask) >> 2;
-	
+			
+	// update branch resolution for old history
+	BP.set_branch_resolution(pc, taken);
+
 	// update history
 	BP.update_history_vector(pc, taken);
-		
-	// update branch resolution for new history
-	BP.set_branch_resolution(pc, taken);
 	
 	// update history vector
 	btbEntry.tag    = pc & BP.tagMask;
@@ -552,7 +579,8 @@ void BP_update(uint32_t pc, uint32_t targetPc, bool taken, uint32_t pred_dst){
 		std::cout << "pc: 0x" << std::hex << pc << " ";//std::endl;
 		std::cout << "target: 0x" << std::hex << targetPc << " ";//std::endl;
 		std::cout << "branch: " << ((taken) ? "T" : "N") << " ";//std::endl;
-		std::cout << "predicted: 0x" << std::hex << pred_dst << " ";//std::endl;
+		std::cout << "predicted pc: 0x" << std::hex << pred_dst << " ";//std::endl;
+		std::cout << "predicted: " << ((BP.lastJump) ? "T" : "N");//std::endl;
 		std::cout << std::endl;
 	#endif	 
 		
