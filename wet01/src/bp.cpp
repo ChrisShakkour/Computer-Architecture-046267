@@ -19,10 +19,6 @@
 #define ADDR_WIDTH 			32 // instruction address is 32 bits
 
 
-uint32_t tagMask = 0xFFFFFFFF;
-
-
-
 /*///////////////////////////////////////////////
   _____                     _        __  _    
  |_   _|_  _  _ __  ___  __| | ___  / _|( )___
@@ -368,7 +364,7 @@ class BranchPredictor {
 			// btb table calculation
 			numOfEntries = id.numOfEntries;
 			tagSize = id.tagSize;
-			btbBitSize = numOfEntries * (ADDR_WIDTH + tagSize + 1); // target, tag, valid bit
+			btbBitSize = numOfEntries * ((ADDR_WIDTH-2) + tagSize + 1); // target-2(addr align to 4), tag, valid bit
 			
 			// history calculation
 			histSize = id.historySize;
@@ -529,9 +525,11 @@ bool BP_predict(uint32_t pc, uint32_t *dst){
 			return NOT_TAKEN;
 		}
 	}
-		
+
+	// valid entry, but tag misalignment
+	(*dst) = pc + 4;
 	BP.lastJump = NOT_TAKEN;
-	return false;
+	return NOT_TAKEN;
 }
 
 
