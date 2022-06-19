@@ -1,0 +1,1 @@
+make clean; make; ./sim_main tests/example1.img
